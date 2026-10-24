@@ -1,6 +1,6 @@
 # Technical Specification 001 — Order & Inventory API
 
-Status: **PROPOSAL — implementation not authorized**
+Status: **DESIGN AMENDMENTS A01–A09 APPROVED — implementation and merge NOT authorized**
 Date: 2026-10-24
 Approved baseline: API-only NestJS modular monolith, TypeORM, MySQL InnoDB, JWT seeded users, multi-item orders.
 
@@ -14,11 +14,11 @@ I3: order lines and totals reflect a consistent authoritative price snapshot; ne
 I4: failed transaction leaves no stock/order/idempotency partial commit.
 I5: users cannot access others' orders without admin authorization.
 
-## 2. Proposed defaults pending explicit human approval
+## 2. Proposed defaults (read together with approved A01–A09 amendments below; remaining specifics require review)
 
 **P01 — Idempotency key:** mandatory `Idempotency-Key` on `POST /orders`, UUID v4 or opaque string length 16–128 with safe character whitelist. Scoped by (user_id, operation='create-order', key), enforced by unique database constraint. Compute SHA-256 of canonical validated request (aggregate duplicate product IDs, sort by product ID, normalize quantities). Require same logical cart -> same hash independently of line ordering. **Do not hash sensitive token contents.**
 
-**P02 — Idempotency lifecycle:** insert a claim inside the *same* InnoDB transaction as stock + order. Save payload hash, order reference, response status/body or deterministic reconstructable result on success. On conflict from concurrent matching request, wait on unique constraint as MySQL permits; after winning transaction commits, read committed record: identical hash -> replay 201 with same logical response and `Idempotency-Replayed: true`; differing hash -> 409 `IDEMPOTENCY_KEY_REUSED`. If the conflicting transaction rolls back, caller may claim and proceed. Bound statement/lock wait time; on unresolved in-flight/timeout return retriable 409/503 with `Retry-After` as appropriate. No blind second order creation. Store records for **at least 24h** (proposed); after expiration keys may be reused, which must be clearly documented. Do not delete records without a designed cleanup policy; for initial milestone retain records indefinitely, then implement safe pruning later. '24h' is a future minimum contractual guarantee, not an active TTL.
+**P02 — Idempotency lifecycle:** insert a claim inside the *same* InnoDB transaction as stock + order. Save payload hash, order reference, response status/body or deterministic reconstructable result on success. On conflict from concurrent matching request, wait on unique constraint as MySQL permits; after winning transaction commits, read committed record: identical hash -> replay 201 with same logical response and `Idempotency-Replayed: true`; differing hash -> 409 `IDEMPOTENCY_KEY_REUSED`. If the conflicting transaction rolls back, caller may claim and proceed. Bound statement/lock wait time; on unresolved in-flight/timeout return retriable 409/503 with `Retry-After` as appropriate. No blind second order creation. For milestone 1, retain committed idempotency records indefinitely, with no TTL or key reuse. Revisit retention and storage cost in a later ADR.
 
 **P03 — Money:** currency THB, stored as integer **satang** (smallest minor unit), not JS floating-point authoritative totals. DB `BIGINT` unsigned or signed-positive with constraints as supported; map to string/BigInt-aware type boundary (do not cast unsafe BIGINT to JS Number). API price/amount values serialized as decimal integer strings representing satang, e.g. `"25900"` means THB 259.00. Require positive unit price, positive quantity, overflow/range checks; exclude VAT, discounts and FX from milestone 1.
 
@@ -86,9 +86,26 @@ Client retries using same idempotency key. If prior commit succeeded, replay ord
 - [x] TypeORM (human)
 - [x] JWT seeded users (human)
 - [x] Multi-line orders (human)
-- [ ] P01–P08 defaults (pending human approval)
+- [x] A01–A09 amendments (human-approved; see Section 8)
+- [ ] Precise implementation parameters for P01–P08 that amendments do not settle (require review)
 - [ ] ID strategy, MySQL/Node/Nest versions and reproducible toolchain selected
 - [ ] Explicit permission to implement (not yet granted)
 - [ ] Separate permission to merge (not yet granted)
 
 No application source code, migration, CI workflow or deployment changes are authorized by this specification.
+
+## 8. Approved security/database review amendments (A01–A09)
+Human approval recorded 2026-10-24. These amendments take precedence over conflicting provisional statements in P01–P08 and do **not** authorize source code changes.
+
+- **A01 (APPROVED):** seed accounts only under explicit development/test settings; no default seeded admin in production. Milestone 1 uses short-lived JWT access tokens only, without refresh/logout endpoints. Store password hashes, never secrets or demo credentials in committed config.
+- **A02 (APPROVED):** enforce owner-or-admin access on every order detail query and server-side filtered list; use a non-disclosing 404 for non-owned order details, not user-provided owner IDs.
+- **A03 (APPROVED):** define bounded request-body size, unique cart line count, quantities, key length/format, transaction lock waits and request rate limits in implementation plan. Stable public error codes/request IDs; no internal SQL details or sensitive token/key logging.
+- **A04 (APPROVED):** normalize duplicate items, sort IDs, canonicalize payload and scope idempotency uniquely to (user, operation, key). Persist committed response or reconstructible reference atomically. After unique conflict, roll back failed work before querying committed state; replay same logical result for matching hash, 409 for mismatch; reuse original key when commit outcome is unknown, never create a replacement key.
+- **A05 (APPROVED):** THB is represented in integer satang using BIGINT / BigInt-aware or decimal-string boundaries; serialize API money as decimal strings, validate bounds, reject overflow, do not calculate authoritative monetary totals with JS floating-point.
+- **A06 (APPROVED):** lock unique products in ascending ID order, atomically decrement stock conditionally, coordinate admin stock changes using compatible locking; retry only whole transactions on selected transient errors after confirmed rollback, in bounded attempts.
+- **A07 (APPROVED):** snapshot the per-line product price under the relevant row lock within the transaction. Do not promise a single simultaneous catalog-wide price snapshot for the entire cart.
+- **A08 (APPROVED):** do not automatically expire/prune idempotency records in milestone 1. Separate ADR required before retention changes or key reuse.
+- **A09 (APPROVED):** before implementation can be accepted, run real MySQL integration tests validating final database state after concurrent requests, failure/rollback, and security-negative E2E tests. Mock-only success is insufficient.
+
+### Remaining planning decisions (not implementation authorization)
+Select framework/runtime/MySQL versions, product/order ID strategy, numeric bounds, exact quotas/rate limits and timeouts, error schema edge cases, and concrete transaction/TypeORM APIs. Their selection should be presented for human review as part of implementation planning.
